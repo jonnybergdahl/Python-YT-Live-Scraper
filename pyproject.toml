@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yt-live-scraper"
+version = "0.1.0"
+description = "Scrape YouTube channels for live and upcoming stream events"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Jonny Bergdahl", email = "bergdahl@users.noreply.github.com"},
+]
+keywords = ["youtube", "live", "stream", "scraper"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "requests>=2.28",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.urls]
+Homepage = "https://github.com/jonnybergdahl/Python-YT-Live-Scraper"
+Repository = "https://github.com/jonnybergdahl/Python-YT-Live-Scraper"
+Issues = "https://github.com/jonnybergdahl/Python-YT-Live-Scraper/issues"
+
+[project.scripts]
+yt-live-scraper = "yt_live_scraper.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
