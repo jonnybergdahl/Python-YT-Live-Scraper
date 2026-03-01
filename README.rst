@@ -11,6 +11,12 @@ Installation
 
    pip install yt-live-scraper
 
+Documentation
+-------------
+
+The full library documentation can be `found
+here <https://jonnybergdahl.github.io/yt-live-scraper/>`__.
+
 CLI Usage
 ---------
 

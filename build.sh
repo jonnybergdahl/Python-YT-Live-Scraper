@@ -23,5 +23,5 @@ popd || exit
 
 # Make new version
 rm -rf dist
-python -m build
+python3 -m build
 twine upload dist/*

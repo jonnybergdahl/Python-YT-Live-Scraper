@@ -8,6 +8,10 @@ A Python library and CLI tool for scraping YouTube channels for live and upcomin
 pip install yt-live-scraper
 ```
 
+## Documentation
+
+The full library documentation can be [found here](https://jonnybergdahl.github.io/yt-live-scraper/).
+
 ## CLI Usage
 
 ```bash
