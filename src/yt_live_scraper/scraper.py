@@ -60,6 +60,24 @@ class UpcomingStream:
         status = " [LIVE]" if self.live else ""
         return f"{self.channel}: {self.title} — {local:%Y-%m-%d %H:%M %Z}{status}"
 
+    @staticmethod
+    def exists(channel_handle: str, *, timeout: float = 10) -> bool:
+        """Check if a YouTube channel handle exists.
+
+        :param channel_handle: Channel handle (with or without leading ``@``).
+        :param timeout: HTTP request timeout in seconds.
+        :returns: ``True`` if the channel exists, ``False`` otherwise.
+        """
+        handle = channel_handle.lstrip("@")
+        url = f"https://www.youtube.com/@{handle}/streams"
+        try:
+            resp = requests.get(
+                url, headers=_HEADERS, cookies=_COOKIES, timeout=timeout,
+            )
+            return resp.status_code == 200
+        except requests.RequestException:
+            return False
+
 
 def _extract_yt_initial_data(html: str) -> dict:
     """Extract the ``ytInitialData`` JSON object from a YouTube page.

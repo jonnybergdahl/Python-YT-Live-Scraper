@@ -242,6 +242,37 @@ class TestUpcomingStreamStr:
 
 
 # ---------------------------------------------------------------------------
+# UpcomingStream.exists
+# ---------------------------------------------------------------------------
+
+class TestUpcomingStreamExists:
+    def test_exists_returns_true_on_200(self):
+        with patch("yt_live_scraper.scraper.requests.get") as mocked_get:
+            mocked_get.return_value = _FakeResponse("", status_code=200)
+            assert UpcomingStream.exists("anychannel") is True
+            mocked_get.assert_called_once()
+            args, kwargs = mocked_get.call_args
+            assert "@anychannel" in args[0]
+
+    def test_exists_returns_false_on_404(self):
+        with patch("yt_live_scraper.scraper.requests.get") as mocked_get:
+            mocked_get.return_value = _FakeResponse("", status_code=404)
+            assert UpcomingStream.exists("nonexistent") is False
+
+    def test_exists_returns_false_on_exception(self):
+        with patch("yt_live_scraper.scraper.requests.get") as mocked_get:
+            mocked_get.side_effect = requests.RequestException()
+            assert UpcomingStream.exists("errorchannel") is False
+
+    def test_exists_strips_at_prefix(self):
+        with patch("yt_live_scraper.scraper.requests.get") as mocked_get:
+            mocked_get.return_value = _FakeResponse("", status_code=200)
+            UpcomingStream.exists("@mychannel")
+            args, kwargs = mocked_get.call_args
+            assert "https://www.youtube.com/@mychannel/streams" == args[0]
+
+
+# ---------------------------------------------------------------------------
 # get_upcoming_streams (integration with mocked HTTP)
 # ---------------------------------------------------------------------------
 
