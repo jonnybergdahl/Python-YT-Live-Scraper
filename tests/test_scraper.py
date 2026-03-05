@@ -10,7 +10,9 @@ import pytest
 import requests
 
 from yt_live_scraper.scraper import (
+    StreamLiveStatus,
     UpcomingStream,
+    _extract_actual_start,
     _extract_player_response,
     _extract_yt_initial_data,
     _find_streams_tab,
@@ -427,6 +429,41 @@ class TestExtractPlayerResponse:
 
 
 # ---------------------------------------------------------------------------
+# _extract_actual_start
+# ---------------------------------------------------------------------------
+
+class TestExtractActualStart:
+    def test_extracts_start_timestamp(self):
+        data = {
+            "microformat": {
+                "playerMicroformatRenderer": {
+                    "liveBroadcastDetails": {
+                        "startTimestamp": "2026-03-04T20:00:00+00:00",
+                    }
+                }
+            }
+        }
+        result = _extract_actual_start(data)
+        assert result == datetime(2026, 3, 4, 20, 0, tzinfo=timezone.utc)
+
+    def test_returns_none_when_missing(self):
+        assert _extract_actual_start({}) is None
+        assert _extract_actual_start({"microformat": {}}) is None
+
+    def test_returns_none_on_invalid_timestamp(self):
+        data = {
+            "microformat": {
+                "playerMicroformatRenderer": {
+                    "liveBroadcastDetails": {
+                        "startTimestamp": "not-a-date",
+                    }
+                }
+            }
+        }
+        assert _extract_actual_start(data) is None
+
+
+# ---------------------------------------------------------------------------
 # is_stream_live
 # ---------------------------------------------------------------------------
 
@@ -437,31 +474,56 @@ class TestIsStreamLive:
             return_value=_FakeResponse(html, status_code),
         )
 
-    def test_returns_true_when_live(self):
+    def test_returns_live_with_actual_start(self):
+        data = {
+            "videoDetails": {"isLive": True},
+            "microformat": {
+                "playerMicroformatRenderer": {
+                    "liveBroadcastDetails": {
+                        "startTimestamp": "2026-03-04T20:00:00+00:00",
+                    }
+                }
+            },
+        }
+        html = _wrap_player_response(data)
+        with self._patch_get(html):
+            result = is_stream_live("abc123")
+        assert result.is_live is True
+        assert result.actual_start == datetime(2026, 3, 4, 20, 0, tzinfo=timezone.utc)
+
+    def test_returns_live_without_actual_start(self):
         html = _wrap_player_response({"videoDetails": {"isLive": True}})
         with self._patch_get(html):
-            assert is_stream_live("abc123") is True
+            result = is_stream_live("abc123")
+        assert result.is_live is True
+        assert result.actual_start is None
 
-    def test_returns_false_when_not_live(self):
+    def test_returns_not_live(self):
         html = _wrap_player_response({"videoDetails": {"isLive": False}})
         with self._patch_get(html):
-            assert is_stream_live("abc123") is False
+            result = is_stream_live("abc123")
+        assert result.is_live is False
+        assert result.actual_start is None
 
-    def test_returns_false_when_no_isLive_key(self):
+    def test_returns_not_live_when_no_isLive_key(self):
         html = _wrap_player_response({"videoDetails": {"title": "Test"}})
         with self._patch_get(html):
-            assert is_stream_live("abc123") is False
+            result = is_stream_live("abc123")
+        assert result.is_live is False
 
-    def test_returns_false_on_http_error(self):
+    def test_returns_not_live_on_http_error(self):
         with patch(
             "yt_live_scraper.scraper.requests.get",
             side_effect=requests.ConnectionError("fail"),
         ):
-            assert is_stream_live("abc123") is False
+            result = is_stream_live("abc123")
+        assert result.is_live is False
+        assert result.actual_start is None
 
-    def test_returns_false_when_no_player_response(self):
+    def test_returns_not_live_when_no_player_response(self):
         with self._patch_get("<html>no data</html>"):
-            assert is_stream_live("abc123") is False
+            result = is_stream_live("abc123")
+        assert result.is_live is False
 
 
 # ---------------------------------------------------------------------------

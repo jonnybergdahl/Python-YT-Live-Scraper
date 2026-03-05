@@ -193,6 +193,41 @@ def _parse_stream(
     )
 
 
+@dataclass
+class StreamLiveStatus:
+    """Result of checking whether a stream is live.
+
+    :param is_live: ``True`` if the stream is currently live.
+    :param actual_start: The actual broadcast start time in UTC, extracted from
+                         ``liveBroadcastDetails.startTimestamp``.  ``None`` when
+                         the timestamp is unavailable or the stream is not live.
+    """
+
+    is_live: bool
+    actual_start: datetime | None = None
+
+
+def _extract_actual_start(data: dict) -> datetime | None:
+    """Extract the broadcast start timestamp from a player response.
+
+    :param data: Parsed ``ytInitialPlayerResponse`` dictionary.
+    :returns: The start time as a UTC :class:`datetime`, or ``None`` if
+              the field is missing or cannot be parsed.
+    """
+    try:
+        ts = (
+            data.get("microformat", {})
+            .get("playerMicroformatRenderer", {})
+            .get("liveBroadcastDetails", {})
+            .get("startTimestamp", "")
+        )
+        if ts:
+            return datetime.fromisoformat(ts)
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
 def _extract_player_response(html: str) -> dict:
     """Extract the ``ytInitialPlayerResponse`` JSON object from a YouTube page.
 
@@ -208,16 +243,19 @@ def _extract_player_response(html: str) -> dict:
     return obj
 
 
-def is_stream_live(video_id: str, *, timeout: float = 10) -> bool:
+def is_stream_live(video_id: str, *, timeout: float = 10) -> StreamLiveStatus:
     """Check whether a YouTube stream is currently live.
 
     Fetches the video page and inspects the player response for the
-    ``isLive`` flag inside ``videoDetails``.
+    ``isLive`` flag inside ``videoDetails``.  When the stream is live,
+    the actual broadcast start time is extracted from
+    ``liveBroadcastDetails.startTimestamp`` if available.
 
     :param video_id: YouTube video ID to check.
     :param timeout: HTTP request timeout in seconds.
-    :returns: ``True`` if the stream is currently live, ``False`` otherwise
-              (including on network errors).
+    :returns: A :class:`StreamLiveStatus` with the live flag and, when
+              available, the actual start time.  On network or parse errors
+              the status defaults to not-live with no start time.
     """
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
@@ -226,14 +264,16 @@ def is_stream_live(video_id: str, *, timeout: float = 10) -> bool:
         )
         resp.raise_for_status()
     except requests.RequestException:
-        return False
+        return StreamLiveStatus(is_live=False)
 
     try:
         data = _extract_player_response(resp.text)
     except ValueError:
-        return False
+        return StreamLiveStatus(is_live=False)
 
-    return data.get("videoDetails", {}).get("isLive") is True
+    is_live = data.get("videoDetails", {}).get("isLive") is True
+    actual_start = _extract_actual_start(data) if is_live else None
+    return StreamLiveStatus(is_live=is_live, actual_start=actual_start)
 
 
 def get_upcoming_streams(
