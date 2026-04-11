@@ -51,6 +51,7 @@ def main(argv: list[str] | None = None) -> None:
                 [
                     {
                         "channel": s.channel,
+                        "channel_id": s.channel_id,
                         "channel_thumbnail_url": s.channel_thumbnail_url,
                         "title": s.title,
                         "video_id": s.video_id,
@@ -58,6 +59,7 @@ def main(argv: list[str] | None = None) -> None:
                         "url": s.url,
                         "thumbnail_url": s.thumbnail_url,
                         "live": s.live,
+                        "stream_id": s.video_id if s.live else None,
                     }
                     for s in streams
                 ],

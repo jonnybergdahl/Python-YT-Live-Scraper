@@ -33,6 +33,7 @@ class UpcomingStream:
     """A YouTube live or upcoming stream.
 
     :param channel: Channel display name.
+    :param channel_id: YouTube channel ID.
     :param channel_thumbnail_url: URL of the channel's avatar image.
     :param video_id: YouTube video ID.
     :param title: Stream title.
@@ -43,6 +44,7 @@ class UpcomingStream:
     """
 
     channel: str
+    channel_id: str
     channel_thumbnail_url: str
     video_id: str
     title: str
@@ -58,7 +60,8 @@ class UpcomingStream:
         """
         local = self.scheduled_start.astimezone()
         status = " [LIVE]" if self.live else ""
-        return f"{self.channel}: {self.title} — {local:%Y-%m-%d %H:%M %Z}{status}"
+        stream_id = f" ({self.video_id})" if self.live else ""
+        return f"{self.channel}: {self.title} — {local:%Y-%m-%d %H:%M %Z}{status}{stream_id}"
 
     @staticmethod
     def exists(channel_handle: str, *, timeout: float = 10) -> bool:
@@ -69,7 +72,7 @@ class UpcomingStream:
         :returns: ``True`` if the channel exists, ``False`` otherwise.
         """
         handle = channel_handle.lstrip("@")
-        url = f"https://www.youtube.com/@{handle}/streams"
+        url = f"https://www.youtube.com/@{handle}"
         try:
             resp = requests.get(
                 url, headers=_HEADERS, cookies=_COOKIES, timeout=timeout,
@@ -77,6 +80,28 @@ class UpcomingStream:
             return resp.status_code == 200
         except requests.RequestException:
             return False
+
+
+def get_channel(channel_handle: str, *, timeout: float = 10) -> str | None:
+    """Get the display name of a YouTube channel from its handle.
+
+    :param channel_handle: Channel handle (with or without leading ``@``).
+    :param timeout: HTTP request timeout in seconds.
+    :returns: The channel's display name, or ``None`` if it does not exist.
+    """
+    handle = channel_handle.lstrip("@")
+    url = f"https://www.youtube.com/@{handle}"
+    try:
+        resp = requests.get(
+            url, headers=_HEADERS, cookies=_COOKIES, timeout=timeout,
+        )
+        if resp.status_code != 200:
+            return None
+        data = _extract_yt_initial_data(resp.text)
+        name, _, _ = _parse_channel_info(data)
+        return name
+    except (requests.RequestException, ValueError):
+        return None
 
 
 def _extract_yt_initial_data(html: str) -> dict:
@@ -112,18 +137,19 @@ def _find_streams_tab(data: dict) -> dict | None:
     return None
 
 
-def _parse_channel_info(data: dict) -> tuple[str, str]:
-    """Extract the channel name and avatar thumbnail URL.
+def _parse_channel_info(data: dict) -> tuple[str, str, str]:
+    """Extract the channel name, ID and avatar thumbnail URL.
 
     :param data: Parsed ``ytInitialData`` dictionary.
-    :returns: A tuple of ``(channel_name, channel_thumbnail_url)``.
-              Defaults to ``("Unknown", "")`` when metadata is missing.
+    :returns: A tuple of ``(channel_name, channel_id, channel_thumbnail_url)``.
+              Defaults to ``("Unknown", "", "")`` when metadata is missing.
     """
     metadata = data.get("metadata", {}).get("channelMetadataRenderer", {})
     name = metadata.get("title", "Unknown")
+    channel_id = metadata.get("externalId", "")
     avatars = metadata.get("avatar", {}).get("thumbnails", [])
     thumbnail_url = avatars[-1]["url"] if avatars else ""
-    return name, thumbnail_url
+    return name, channel_id, thumbnail_url
 
 
 def _get_overlay_style(video: dict) -> str | None:
@@ -141,12 +167,13 @@ def _get_overlay_style(video: dict) -> str | None:
 
 
 def _parse_stream(
-    video: dict, channel: str, channel_thumbnail_url: str, now: datetime,
+    video: dict, channel: str, channel_id: str, channel_thumbnail_url: str, now: datetime,
 ) -> UpcomingStream | None:
     """Parse a single ``videoRenderer`` into an :class:`UpcomingStream`.
 
     :param video: A ``videoRenderer`` dictionary from YouTube's data.
     :param channel: The channel display name.
+    :param channel_id: The YouTube channel ID.
     :param channel_thumbnail_url: URL of the channel's avatar image.
     :param now: Current UTC time, used as the start time for live streams
                 that lack ``upcomingEventData``.
@@ -183,6 +210,7 @@ def _parse_stream(
 
     return UpcomingStream(
         channel=channel,
+        channel_id=channel_id,
         channel_thumbnail_url=channel_thumbnail_url,
         video_id=video_id,
         title=title,
@@ -316,7 +344,7 @@ def get_upcoming_streams(
             print(f"Warning: no ytInitialData found for @{handle}")
             continue
 
-        channel_name, channel_thumb = _parse_channel_info(data)
+        channel_name, channel_id, channel_thumb = _parse_channel_info(data)
         tab = _find_streams_tab(data)
         if tab is None:
             continue
@@ -336,7 +364,7 @@ def get_upcoming_streams(
             if not video:
                 continue
 
-            stream = _parse_stream(video, channel_name, channel_thumb, now)
+            stream = _parse_stream(video, channel_name, channel_id, channel_thumb, now)
             if stream and stream.scheduled_start >= cutoff:
                 results.append(stream)
 

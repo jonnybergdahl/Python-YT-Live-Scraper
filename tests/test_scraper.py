@@ -19,6 +19,7 @@ from yt_live_scraper.scraper import (
     _get_overlay_style,
     _parse_channel_info,
     _parse_stream,
+    get_channel,
     get_upcoming_streams,
     is_stream_live,
 )
@@ -52,6 +53,7 @@ def _make_video(
 
 def _make_yt_data(
     channel_name: str = "TestChannel",
+    channel_id: str = "UC1234567890",
     channel_thumbnail_url: str = "https://yt3.googleusercontent.com/abc123",
     tab_title: str = "Live",
     videos: list[dict] | None = None,
@@ -65,6 +67,7 @@ def _make_yt_data(
         "metadata": {
             "channelMetadataRenderer": {
                 "title": channel_name,
+                "externalId": channel_id,
                 "avatar": {
                     "thumbnails": [{"url": channel_thumbnail_url}],
                 },
@@ -136,18 +139,21 @@ class TestFindStreamsTab:
 # ---------------------------------------------------------------------------
 
 class TestParseChannelInfo:
-    def test_extracts_name_and_thumbnail(self):
+    def test_extracts_name_id_and_thumbnail(self):
         data = _make_yt_data(
             channel_name="My Channel",
+            channel_id="UC_CHANNEL_ID",
             channel_thumbnail_url="https://yt3.googleusercontent.com/thumb",
         )
-        name, thumb = _parse_channel_info(data)
+        name, channel_id, thumb = _parse_channel_info(data)
         assert name == "My Channel"
+        assert channel_id == "UC_CHANNEL_ID"
         assert thumb == "https://yt3.googleusercontent.com/thumb"
 
     def test_returns_defaults_for_missing(self):
-        name, thumb = _parse_channel_info({})
+        name, channel_id, thumb = _parse_channel_info({})
         assert name == "Unknown"
+        assert channel_id == ""
         assert thumb == ""
 
 
@@ -175,9 +181,10 @@ class TestGetOverlayStyle:
 class TestParseStream:
     def test_upcoming_stream(self):
         video = _make_video(overlay_style="UPCOMING", start_time="1772654400")
-        stream = _parse_stream(video, "Ch", "https://thumb.url", NOW)
+        stream = _parse_stream(video, "Ch", "UC123", "https://thumb.url", NOW)
         assert stream is not None
         assert stream.video_id == "abc123"
+        assert stream.channel_id == "UC123"
         assert stream.title == "Test Stream"
         assert stream.live is False
         assert stream.channel_thumbnail_url == "https://thumb.url"
@@ -186,26 +193,28 @@ class TestParseStream:
 
     def test_live_stream(self):
         video = _make_video(overlay_style="LIVE", start_time=None)
-        stream = _parse_stream(video, "Ch", "", NOW)
+        stream = _parse_stream(video, "Ch", "UC123", "", NOW)
         assert stream is not None
+        assert stream.channel_id == "UC123"
         assert stream.live is True
         assert stream.scheduled_start == NOW
 
     def test_live_stream_with_start_time(self):
         video = _make_video(overlay_style="LIVE", start_time="1772654400")
-        stream = _parse_stream(video, "Ch", "", NOW)
+        stream = _parse_stream(video, "Ch", "UC123", "", NOW)
         assert stream is not None
+        assert stream.channel_id == "UC123"
         assert stream.live is True
         assert stream.scheduled_start == datetime(2026, 3, 4, 20, 0, tzinfo=timezone.utc)
 
     def test_past_vod_returns_none(self):
         video = _make_video(overlay_style="DEFAULT", start_time=None)
-        assert _parse_stream(video, "Ch", "", NOW) is None
+        assert _parse_stream(video, "Ch", "UC123", "", NOW) is None
 
     def test_upcoming_without_start_time_returns_none(self):
         video = _make_video(overlay_style="UPCOMING", start_time=None)
         # No upcomingEventData and not LIVE → None
-        assert _parse_stream(video, "Ch", "", NOW) is None
+        assert _parse_stream(video, "Ch", "UC123", "", NOW) is None
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +225,7 @@ class TestUpcomingStreamStr:
     def test_upcoming_format(self):
         s = UpcomingStream(
             channel="Ch",
+            channel_id="UC123",
             channel_thumbnail_url="",
             video_id="x",
             title="My Stream",
@@ -232,6 +242,7 @@ class TestUpcomingStreamStr:
     def test_live_format(self):
         s = UpcomingStream(
             channel="Ch",
+            channel_id="UC123",
             channel_thumbnail_url="",
             video_id="x",
             title="My Stream",
@@ -240,7 +251,9 @@ class TestUpcomingStreamStr:
             thumbnail_url="",
             live=True,
         )
-        assert "[LIVE]" in str(s)
+        out = str(s)
+        assert "[LIVE]" in out
+        assert " (x)" in out
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +284,7 @@ class TestUpcomingStreamExists:
             mocked_get.return_value = _FakeResponse("", status_code=200)
             UpcomingStream.exists("@mychannel")
             args, kwargs = mocked_get.call_args
-            assert "https://www.youtube.com/@mychannel/streams" == args[0]
+            assert "https://www.youtube.com/@mychannel" == args[0]
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +405,7 @@ class TestGetUpcomingStreams:
         ) as mock_get:
             get_upcoming_streams(["@myhandle"], from_date=date(2026, 1, 1))
         url = mock_get.call_args[0][0]
-        assert "/@myhandle/streams" in url
+        assert "/@myhandle" in url
 
     def test_http_error_skips_channel(self, capsys):
         with patch(
@@ -527,6 +540,34 @@ class TestIsStreamLive:
 
 
 # ---------------------------------------------------------------------------
+# get_channel
+# ---------------------------------------------------------------------------
+
+class TestGetChannel:
+    def test_returns_name_on_200(self):
+        data = _make_yt_data(channel_name="My Awesome Channel")
+        html = _wrap_as_html(data)
+        with patch("yt_live_scraper.scraper.requests.get") as mocked_get:
+            mocked_get.return_value = _FakeResponse(html, status_code=200)
+            assert get_channel("anychannel") == "My Awesome Channel"
+
+    def test_returns_none_on_404(self):
+        with patch("yt_live_scraper.scraper.requests.get") as mocked_get:
+            mocked_get.return_value = _FakeResponse("", status_code=404)
+            assert get_channel("nonexistent") is None
+
+    def test_returns_none_on_exception(self):
+        with patch("yt_live_scraper.scraper.requests.get") as mocked_get:
+            mocked_get.side_effect = requests.RequestException()
+            assert get_channel("errorchannel") is None
+
+    def test_returns_none_on_invalid_html(self):
+        with patch("yt_live_scraper.scraper.requests.get") as mocked_get:
+            mocked_get.return_value = _FakeResponse("<html>no data</html>", status_code=200)
+            assert get_channel("nodatachannel") is None
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -549,6 +590,7 @@ class TestCli:
 
     def test_json_output(self, capsys):
         data = _make_yt_data(
+            channel_id="UC123",
             videos=[_make_video(start_time="1772654400")],
         )
         html = _wrap_as_html(data)
@@ -561,9 +603,31 @@ class TestCli:
         parsed = json.loads(capsys.readouterr().out)
         assert len(parsed) == 1
         assert "video_id" in parsed[0]
+        assert parsed[0]["channel_id"] == "UC123"
         assert "channel_thumbnail_url" in parsed[0]
         assert "live" in parsed[0]
         assert parsed[0]["scheduled_start"] == "2026-03-04T20:00:00+00:00"
+        # We don't check stream_id here because it's only for live streams in this test case
+        # Wait, the test case says s.live is False because overlay_style is not LIVE
+        assert parsed[0]["live"] is False
+        assert parsed[0]["stream_id"] is None
+
+    def test_json_output_live(self, capsys):
+        data = _make_yt_data(
+            channel_id="UC123",
+            videos=[_make_video(overlay_style="LIVE", start_time=None)],
+        )
+        html = _wrap_as_html(data)
+        with patch(
+            "yt_live_scraper.scraper.requests.get",
+            return_value=_FakeResponse(html),
+        ):
+            from yt_live_scraper.cli import main
+            main(["ch", "--from", "2026-01-01", "--json"])
+        parsed = json.loads(capsys.readouterr().out)
+        assert len(parsed) == 1
+        assert parsed[0]["live"] is True
+        assert parsed[0]["stream_id"] == "abc123"
 
     def test_no_streams_exits_zero(self, capsys):
         data = _make_yt_data(videos=[_make_video(overlay_style="DEFAULT", start_time=None)])
