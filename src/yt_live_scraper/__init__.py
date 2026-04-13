@@ -1,3 +1,19 @@
-from .scraper import get_upcoming_streams, is_stream_live, StreamLiveStatus, UpcomingStream
+from .scraper import (
+    ChannelInfo,
+    StreamLiveStatus,
+    UpcomingStream,
+    get_channel,
+    get_channel_info,
+    get_upcoming_streams,
+    is_stream_live,
+)
 
-__all__ = ["get_upcoming_streams", "is_stream_live", "StreamLiveStatus", "UpcomingStream"]
+__all__ = [
+    "ChannelInfo",
+    "StreamLiveStatus",
+    "UpcomingStream",
+    "get_channel",
+    "get_channel_info",
+    "get_upcoming_streams",
+    "is_stream_live",
+]

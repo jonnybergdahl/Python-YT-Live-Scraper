@@ -82,12 +82,40 @@ class UpcomingStream:
             return False
 
 
+@dataclass
+class ChannelInfo:
+    """Basic metadata for a YouTube channel.
+
+    :param name: Channel display name.
+    :param channel_id: YouTube channel ID.
+    :param thumbnail_url: URL of the channel's avatar image.
+    """
+
+    name: str
+    channel_id: str
+    thumbnail_url: str
+
+
 def get_channel(channel_handle: str, *, timeout: float = 10) -> str | None:
     """Get the display name of a YouTube channel from its handle.
 
     :param channel_handle: Channel handle (with or without leading ``@``).
     :param timeout: HTTP request timeout in seconds.
     :returns: The channel's display name, or ``None`` if it does not exist.
+    """
+    info = get_channel_info(channel_handle, timeout=timeout)
+    return info.name if info else None
+
+
+def get_channel_info(
+    channel_handle: str, *, timeout: float = 10,
+) -> ChannelInfo | None:
+    """Get basic metadata for a YouTube channel from its handle.
+
+    :param channel_handle: Channel handle (with or without leading ``@``).
+    :param timeout: HTTP request timeout in seconds.
+    :returns: A :class:`ChannelInfo` with the channel's name, ID and avatar
+              thumbnail URL, or ``None`` if the channel does not exist.
     """
     handle = channel_handle.lstrip("@")
     url = f"https://www.youtube.com/@{handle}"
@@ -98,8 +126,12 @@ def get_channel(channel_handle: str, *, timeout: float = 10) -> str | None:
         if resp.status_code != 200:
             return None
         data = _extract_yt_initial_data(resp.text)
-        name, _, _ = _parse_channel_info(data)
-        return name
+        name, channel_id, thumbnail_url = _parse_channel_info(data)
+        return ChannelInfo(
+            name=name,
+            channel_id=channel_id,
+            thumbnail_url=thumbnail_url,
+        )
     except (requests.RequestException, ValueError):
         return None
 
