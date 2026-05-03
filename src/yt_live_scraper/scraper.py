@@ -198,6 +198,73 @@ def _get_overlay_style(video: dict) -> str | None:
     return None
 
 
+def _get_lockup_overlay_style(vm: dict) -> str | None:
+    """Return the overlay style for a lockup view model.
+
+    :param vm: A ``lockupViewModel`` dictionary.
+    :returns: The overlay style string (e.g. ``"LIVE"``, ``"UPCOMING"``),
+              or ``None`` if no recognizable overlay is present.
+    """
+    img = vm.get("contentImage", {}).get("thumbnailViewModel", {})
+    for o in img.get("overlays", []):
+        badges = o.get("thumbnailBottomOverlayViewModel", {}).get("badges", [])
+        for b in badges:
+            style = b.get("thumbnailBadgeViewModel", {}).get("badgeStyle", "")
+            if "STYLE_LIVE" in style:
+                return "LIVE"
+            if "STYLE_UPCOMING" in style:
+                return "UPCOMING"
+    return None
+
+
+def _parse_lockup(
+    vm: dict, channel: str, channel_id: str, channel_thumbnail_url: str, now: datetime,
+) -> UpcomingStream | None:
+    """Parse a ``lockupViewModel`` into an :class:`UpcomingStream`.
+
+    :param vm: A ``lockupViewModel`` dictionary.
+    :param channel: The channel display name.
+    :param channel_id: The YouTube channel ID.
+    :param channel_thumbnail_url: URL of the channel's avatar image.
+    :param now: Current UTC time.
+    :returns: An :class:`UpcomingStream` instance, or ``None``.
+    """
+    style = _get_lockup_overlay_style(vm)
+    if style not in ("LIVE", "UPCOMING"):
+        return None
+
+    video_id = vm.get("contentId", "")
+    metadata = vm.get("metadata", {}).get("lockupMetadataViewModel", {})
+    title = metadata.get("title", {}).get("content", "")
+
+    # LockupViewModel in the grid rarely has a machine-readable start time.
+    # For LIVE, we use now. For UPCOMING, we might need a separate check.
+    start_time = now if style == "LIVE" else None
+
+    # Try to extract a higher-res thumbnail.
+    img = vm.get("contentImage", {}).get("thumbnailViewModel", {}).get("image", {})
+    sources = img.get("sources", [])
+    thumbnail_url = sources[-1]["url"] if sources else ""
+
+    if start_time is None and style == "UPCOMING":
+        # We don't have a start time yet.
+        # For now, return a placeholder or None.
+        # The calling function can decide to fetch more info.
+        return None
+
+    return UpcomingStream(
+        channel=channel,
+        channel_id=channel_id,
+        channel_thumbnail_url=channel_thumbnail_url,
+        video_id=video_id,
+        title=title,
+        scheduled_start=start_time,
+        url=f"https://www.youtube.com/watch?v={video_id}",
+        thumbnail_url=thumbnail_url,
+        live=(style == "LIVE"),
+    )
+
+
 def _parse_stream(
     video: dict, channel: str, channel_id: str, channel_thumbnail_url: str, now: datetime,
 ) -> UpcomingStream | None:
@@ -388,16 +455,18 @@ def get_upcoming_streams(
         )
 
         for item in contents:
-            video = (
-                item.get("richItemRenderer", {})
-                .get("content", {})
-                .get("videoRenderer", {})
-            )
-            if not video:
-                continue
+            rir = item.get("richItemRenderer", {})
+            content = rir.get("content", {})
+            video = content.get("videoRenderer")
+            lockup = content.get("lockupViewModel")
 
-            stream = _parse_stream(video, channel_name, channel_id, channel_thumb, now)
-            if stream and stream.scheduled_start >= cutoff:
+            stream = None
+            if video:
+                stream = _parse_stream(video, channel_name, channel_id, channel_thumb, now)
+            elif lockup:
+                stream = _parse_lockup(lockup, channel_name, channel_id, channel_thumb, now)
+
+            if stream and (stream.live or stream.scheduled_start >= cutoff):
                 results.append(stream)
 
     results.sort(key=lambda s: s.scheduled_start)

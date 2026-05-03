@@ -369,6 +369,29 @@ class TestGetUpcomingStreams:
         assert len(streams) == 1
         assert streams[0].video_id == "later"
 
+    def test_live_stream_started_before_cutoff_is_included(self):
+        # 2026-03-01 12:00:00 UTC (NOW in tests)
+        # Yesterday: 1772582400 is not correct for NOW.
+        # NOW = datetime(2026, 3, 1, 12, 0, 0, tzinfo=timezone.utc)
+        # 2026-02-28 20:00:00 UTC
+        yesterday_ts = str(int(datetime(2026, 2, 28, 20, 0, 0, tzinfo=timezone.utc).timestamp()))
+        data = _make_yt_data(
+            videos=[
+                _make_video(
+                    video_id="live_yesterday",
+                    overlay_style="LIVE",
+                    start_time=yesterday_ts,
+                ),
+            ],
+        )
+        with self._patch_get(data):
+            streams = get_upcoming_streams(
+                ["ch"], from_date=date(2026, 3, 1),
+            )
+        assert len(streams) == 1
+        assert streams[0].video_id == "live_yesterday"
+        assert streams[0].live is True
+
     def test_sorted_by_start_time(self):
         data = _make_yt_data(
             videos=[
@@ -395,6 +418,68 @@ class TestGetUpcomingStreams:
                 ["@ch1", "ch2"], from_date=date(2026, 1, 1),
             )
         assert len(streams) == 2
+
+    def test_lockup_view_model_live(self):
+        # Sample lockupViewModel structure
+        lockup = {
+            "contentId": "lockup123",
+            "contentImage": {
+                "thumbnailViewModel": {
+                    "image": {
+                        "sources": [{"url": "https://thumb/1.jpg"}]
+                    },
+                    "overlays": [
+                        {
+                            "thumbnailBottomOverlayViewModel": {
+                                "badges": [
+                                    {
+                                        "thumbnailBadgeViewModel": {
+                                            "badgeStyle": "THUMBNAIL_OVERLAY_BADGE_STYLE_LIVE",
+                                            "text": "LIVE"
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            },
+            "metadata": {
+                "lockupMetadataViewModel": {
+                    "title": {"content": "Lockup Title"}
+                }
+            }
+        }
+        data = {
+            "metadata": {"channelMetadataRenderer": {"title": "Ch", "externalId": "UC123"}},
+            "contents": {
+                "twoColumnBrowseResultsRenderer": {
+                    "tabs": [
+                        {
+                            "tabRenderer": {
+                                "title": "Live",
+                                "content": {
+                                    "richGridRenderer": {
+                                        "contents": [
+                                            {"richItemRenderer": {"content": {"lockupViewModel": lockup}}}
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+        html = _wrap_as_html(data)
+        with patch("yt_live_scraper.scraper.requests.get", return_value=_FakeResponse(html)):
+            streams = get_upcoming_streams(["ch"], from_date=date(2026, 1, 1))
+        
+        assert len(streams) == 1
+        assert streams[0].video_id == "lockup123"
+        assert streams[0].title == "Lockup Title"
+        assert streams[0].live is True
+        assert streams[0].thumbnail_url == "https://thumb/1.jpg"
 
     def test_strips_at_from_handle(self):
         data = _make_yt_data(videos=[_make_video(start_time="1772654400")])
