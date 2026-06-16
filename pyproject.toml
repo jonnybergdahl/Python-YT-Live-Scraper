@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yt-live-scraper"
-version = "1.5.0"
+version = "1.6.0"
 description = "Scrape YouTube channels for live and upcoming stream events"
 readme = "README.md"
 license = {text = "MIT"}

@@ -14,8 +14,11 @@ from yt_live_scraper.scraper import (
     UpcomingStream,
     _extract_actual_start,
     _extract_player_response,
+    _extract_scheduled_start,
     _extract_yt_initial_data,
+    _fetch_scheduled_start,
     _find_streams_tab,
+    _get_lockup_overlay_style,
     _get_overlay_style,
     _parse_channel_info,
     _parse_stream,
@@ -49,6 +52,66 @@ def _make_video(
     if start_time is not None:
         video["upcomingEventData"] = {"startTime": start_time}
     return video
+
+
+def _make_lockup(
+    content_id: str = "lockup123",
+    title: str = "Lockup Title",
+    *,
+    badge_style: str = "THUMBNAIL_OVERLAY_BADGE_STYLE_DEFAULT",
+    badge_text: str | None = None,
+    thumbnail_url: str = "https://thumb/1.jpg",
+) -> dict:
+    badge: dict = {"badgeStyle": badge_style}
+    if badge_text is not None:
+        badge["text"] = badge_text
+    return {
+        "contentId": content_id,
+        "contentImage": {
+            "thumbnailViewModel": {
+                "image": {"sources": [{"url": thumbnail_url}]},
+                "overlays": [
+                    {
+                        "thumbnailBottomOverlayViewModel": {
+                            "badges": [{"thumbnailBadgeViewModel": badge}]
+                        }
+                    }
+                ],
+            }
+        },
+        "metadata": {"lockupMetadataViewModel": {"title": {"content": title}}},
+    }
+
+
+def _make_player_response(start_timestamp: str = "2026-06-16T21:00:00+00:00") -> dict:
+    return {
+        "videoDetails": {"isUpcoming": True},
+        "microformat": {
+            "playerMicroformatRenderer": {
+                "liveBroadcastDetails": {"startTimestamp": start_timestamp}
+            }
+        },
+    }
+
+
+def _make_offline_slate_response(scheduled_start_time: str = "1781643600") -> dict:
+    # An upcoming stream that hasn't begun: no liveBroadcastDetails, but a
+    # Unix scheduledStartTime in the offline-slate renderer.
+    return {
+        "videoDetails": {"isUpcoming": True},
+        "playabilityStatus": {
+            "status": "LIVE_STREAM_OFFLINE",
+            "liveStreamability": {
+                "liveStreamabilityRenderer": {
+                    "offlineSlate": {
+                        "liveStreamOfflineSlateRenderer": {
+                            "scheduledStartTime": scheduled_start_time
+                        }
+                    }
+                }
+            },
+        },
+    }
 
 
 def _make_yt_data(
@@ -481,6 +544,69 @@ class TestGetUpcomingStreams:
         assert streams[0].live is True
         assert streams[0].thumbnail_url == "https://thumb/1.jpg"
 
+    def _lockup_yt_data(self, lockup: dict) -> dict:
+        return {
+            "metadata": {
+                "channelMetadataRenderer": {"title": "Ch", "externalId": "UC123"}
+            },
+            "contents": {
+                "twoColumnBrowseResultsRenderer": {
+                    "tabs": [
+                        {
+                            "tabRenderer": {
+                                "title": "Live",
+                                "content": {
+                                    "richGridRenderer": {
+                                        "contents": [
+                                            {
+                                                "richItemRenderer": {
+                                                    "content": {
+                                                        "lockupViewModel": lockup
+                                                    }
+                                                }
+                                            }
+                                        ]
+                                    }
+                                },
+                            }
+                        }
+                    ]
+                }
+            },
+        }
+
+    def test_lockup_view_model_upcoming_fetches_start_time(self):
+        # New markup: upcoming lockup with no inline time; the start time is
+        # looked up from the watch page.
+        lockup = _make_lockup(content_id="up123", badge_text="Upcoming")
+        channel_html = _wrap_as_html(self._lockup_yt_data(lockup))
+        watch_html = _wrap_player_response(_make_player_response())
+        with patch(
+            "yt_live_scraper.scraper.requests.get",
+            side_effect=[_FakeResponse(channel_html), _FakeResponse(watch_html)],
+        ):
+            streams = get_upcoming_streams(["ch"], from_date=date(2026, 1, 1))
+
+        assert len(streams) == 1
+        assert streams[0].video_id == "up123"
+        assert streams[0].live is False
+        assert streams[0].scheduled_start == datetime(
+            2026, 6, 16, 21, 0, tzinfo=timezone.utc
+        )
+
+    def test_lockup_view_model_upcoming_dropped_when_no_start_time(self):
+        lockup = _make_lockup(content_id="up123", badge_text="Upcoming")
+        channel_html = _wrap_as_html(self._lockup_yt_data(lockup))
+        with patch(
+            "yt_live_scraper.scraper.requests.get",
+            side_effect=[
+                _FakeResponse(channel_html),
+                _FakeResponse("<html>no player response</html>"),
+            ],
+        ):
+            streams = get_upcoming_streams(["ch"], from_date=date(2026, 1, 1))
+        assert streams == []
+
     def test_strips_at_from_handle(self):
         data = _make_yt_data(videos=[_make_video(start_time="1772654400")])
         html = _wrap_as_html(data)
@@ -509,6 +635,89 @@ class TestGetUpcomingStreams:
             streams = get_upcoming_streams(["ch"])
         assert streams == []
         assert "Warning" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# _get_lockup_overlay_style
+# ---------------------------------------------------------------------------
+
+class TestGetLockupOverlayStyle:
+    def test_legacy_badge_style_live(self):
+        vm = _make_lockup(badge_style="THUMBNAIL_OVERLAY_BADGE_STYLE_LIVE")
+        assert _get_lockup_overlay_style(vm) == "LIVE"
+
+    def test_legacy_badge_style_upcoming(self):
+        vm = _make_lockup(badge_style="THUMBNAIL_OVERLAY_BADGE_STYLE_UPCOMING")
+        assert _get_lockup_overlay_style(vm) == "UPCOMING"
+
+    def test_text_based_upcoming(self):
+        # New markup: generic badgeStyle, status carried in the text field.
+        vm = _make_lockup(badge_text="Upcoming")
+        assert _get_lockup_overlay_style(vm) == "UPCOMING"
+
+    def test_text_based_live(self):
+        vm = _make_lockup(badge_text="LIVE")
+        assert _get_lockup_overlay_style(vm) == "LIVE"
+
+    def test_unrecognized_returns_none(self):
+        vm = _make_lockup(badge_text="4K")
+        assert _get_lockup_overlay_style(vm) is None
+
+    def test_no_overlays_returns_none(self):
+        assert _get_lockup_overlay_style({}) is None
+
+
+# ---------------------------------------------------------------------------
+# _fetch_scheduled_start
+# ---------------------------------------------------------------------------
+
+class TestFetchScheduledStart:
+    def test_returns_start_from_watch_page(self):
+        html = _wrap_player_response(_make_player_response())
+        with patch(
+            "yt_live_scraper.scraper.requests.get",
+            return_value=_FakeResponse(html),
+        ):
+            result = _fetch_scheduled_start("vid")
+        assert result == datetime(2026, 6, 16, 21, 0, tzinfo=timezone.utc)
+
+    def test_returns_none_on_http_error(self):
+        with patch(
+            "yt_live_scraper.scraper.requests.get",
+            side_effect=requests.ConnectionError("fail"),
+        ):
+            assert _fetch_scheduled_start("vid") is None
+
+    def test_returns_none_when_no_player_response(self):
+        with patch(
+            "yt_live_scraper.scraper.requests.get",
+            return_value=_FakeResponse("<html>nothing</html>"),
+        ):
+            assert _fetch_scheduled_start("vid") is None
+
+    def test_falls_back_to_offline_slate_scheduled_start(self):
+        # No liveBroadcastDetails — start time only in the offline slate.
+        html = _wrap_player_response(_make_offline_slate_response("1781643600"))
+        with patch(
+            "yt_live_scraper.scraper.requests.get",
+            return_value=_FakeResponse(html),
+        ):
+            result = _fetch_scheduled_start("vid")
+        assert result == datetime.fromtimestamp(1781643600, tz=timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# _extract_scheduled_start
+# ---------------------------------------------------------------------------
+
+class TestExtractScheduledStart:
+    def test_extracts_offline_slate_timestamp(self):
+        result = _extract_scheduled_start(_make_offline_slate_response("1781643600"))
+        assert result == datetime.fromtimestamp(1781643600, tz=timezone.utc)
+
+    def test_returns_none_when_missing(self):
+        assert _extract_scheduled_start({}) is None
+        assert _extract_scheduled_start({"playabilityStatus": {}}) is None
 
 
 # ---------------------------------------------------------------------------

@@ -209,16 +209,30 @@ def _get_lockup_overlay_style(vm: dict) -> str | None:
     for o in img.get("overlays", []):
         badges = o.get("thumbnailBottomOverlayViewModel", {}).get("badges", [])
         for b in badges:
-            style = b.get("thumbnailBadgeViewModel", {}).get("badgeStyle", "")
+            badge = b.get("thumbnailBadgeViewModel", {})
+            style = badge.get("badgeStyle", "")
             if "STYLE_LIVE" in style:
                 return "LIVE"
             if "STYLE_UPCOMING" in style:
+                return "UPCOMING"
+            # Newer YouTube markup uses a generic ``..._STYLE_DEFAULT`` badge
+            # and carries the status in the badge ``text`` instead.
+            text = (badge.get("text") or "").strip().lower()
+            if text == "live":
+                return "LIVE"
+            if text == "upcoming":
                 return "UPCOMING"
     return None
 
 
 def _parse_lockup(
-    vm: dict, channel: str, channel_id: str, channel_thumbnail_url: str, now: datetime,
+    vm: dict,
+    channel: str,
+    channel_id: str,
+    channel_thumbnail_url: str,
+    now: datetime,
+    *,
+    timeout: float = 15,
 ) -> UpcomingStream | None:
     """Parse a ``lockupViewModel`` into an :class:`UpcomingStream`.
 
@@ -227,6 +241,7 @@ def _parse_lockup(
     :param channel_id: The YouTube channel ID.
     :param channel_thumbnail_url: URL of the channel's avatar image.
     :param now: Current UTC time.
+    :param timeout: HTTP request timeout for the start-time lookup.
     :returns: An :class:`UpcomingStream` instance, or ``None``.
     """
     style = _get_lockup_overlay_style(vm)
@@ -237,20 +252,21 @@ def _parse_lockup(
     metadata = vm.get("metadata", {}).get("lockupMetadataViewModel", {})
     title = metadata.get("title", {}).get("content", "")
 
-    # LockupViewModel in the grid rarely has a machine-readable start time.
-    # For LIVE, we use now. For UPCOMING, we might need a separate check.
-    start_time = now if style == "LIVE" else None
-
     # Try to extract a higher-res thumbnail.
     img = vm.get("contentImage", {}).get("thumbnailViewModel", {}).get("image", {})
     sources = img.get("sources", [])
     thumbnail_url = sources[-1]["url"] if sources else ""
 
-    if start_time is None and style == "UPCOMING":
-        # We don't have a start time yet.
-        # For now, return a placeholder or None.
-        # The calling function can decide to fetch more info.
-        return None
+    # The lockup grid carries no machine-readable start time. For LIVE we use
+    # now; for UPCOMING we look it up from the watch page.
+    if style == "LIVE":
+        start_time = now
+    else:
+        start_time = (
+            _fetch_scheduled_start(video_id, timeout=timeout) if video_id else None
+        )
+        if start_time is None:
+            return None
 
     return UpcomingStream(
         channel=channel,
@@ -355,6 +371,33 @@ def _extract_actual_start(data: dict) -> datetime | None:
     return None
 
 
+def _extract_scheduled_start(data: dict) -> datetime | None:
+    """Extract the scheduled start time of an upcoming stream.
+
+    Upcoming streams that have not begun yet often lack
+    ``liveBroadcastDetails.startTimestamp`` and instead expose a Unix
+    timestamp in the offline-slate renderer of ``playabilityStatus``.
+
+    :param data: Parsed ``ytInitialPlayerResponse`` dictionary.
+    :returns: The scheduled start time as a UTC :class:`datetime`, or
+              ``None`` if the field is missing or cannot be parsed.
+    """
+    try:
+        ts = (
+            data.get("playabilityStatus", {})
+            .get("liveStreamability", {})
+            .get("liveStreamabilityRenderer", {})
+            .get("offlineSlate", {})
+            .get("liveStreamOfflineSlateRenderer", {})
+            .get("scheduledStartTime", "")
+        )
+        if ts:
+            return datetime.fromtimestamp(int(ts), tz=timezone.utc)
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
 def _extract_player_response(html: str) -> dict:
     """Extract the ``ytInitialPlayerResponse`` JSON object from a YouTube page.
 
@@ -368,6 +411,32 @@ def _extract_player_response(html: str) -> dict:
     decoder = json.JSONDecoder()
     obj, _ = decoder.raw_decode(html, m.end())
     return obj
+
+
+def _fetch_scheduled_start(
+    video_id: str, *, timeout: float = 10,
+) -> datetime | None:
+    """Fetch the scheduled start time for an upcoming stream.
+
+    The channel grid's ``lockupViewModel`` no longer carries a machine-readable
+    start time, so the value is read from the video's watch page
+    (``liveBroadcastDetails.startTimestamp``).
+
+    :param video_id: YouTube video ID to look up.
+    :param timeout: HTTP request timeout in seconds.
+    :returns: The scheduled start time in UTC, or ``None`` on network/parse
+              errors or when the timestamp is unavailable.
+    """
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        resp = requests.get(
+            url, headers=_HEADERS, cookies=_COOKIES, timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = _extract_player_response(resp.text)
+    except (requests.RequestException, ValueError):
+        return None
+    return _extract_actual_start(data) or _extract_scheduled_start(data)
 
 
 def is_stream_live(video_id: str, *, timeout: float = 10) -> StreamLiveStatus:
@@ -464,7 +533,10 @@ def get_upcoming_streams(
             if video:
                 stream = _parse_stream(video, channel_name, channel_id, channel_thumb, now)
             elif lockup:
-                stream = _parse_lockup(lockup, channel_name, channel_id, channel_thumb, now)
+                stream = _parse_lockup(
+                    lockup, channel_name, channel_id, channel_thumb, now,
+                    timeout=timeout,
+                )
 
             if stream and (stream.live or stream.scheduled_start >= cutoff):
                 results.append(stream)
