@@ -3,21 +3,39 @@
 from __future__ import annotations
 
 import json
+import random
 import re
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 _YTINITIALDDATA_RE = re.compile(r"var\s+ytInitialData\s*=\s*")
 _YTPLAYERRESPONSE_RE = re.compile(r"var\s+ytInitialPlayerResponse\s*=\s*")
 
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
-    ),
+# A small pool of realistic, current desktop browser User-Agent strings. One
+# is picked at random per request so the scraper does not present a single
+# static fingerprint on every call.
+_USER_AGENTS = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) "
+    "Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 "
+    "Edg/133.0.0.0",
+)
+
+_BASE_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
@@ -26,6 +44,52 @@ _COOKIES = {
     "SOCS": "CAESEwgDEgk2NTc0MjcyNjQaAmVuIAEaBgiA_JCXBQ",
     "CONSENT": "PENDING+987",
 }
+
+
+def _build_session() -> requests.Session:
+    """Build a session with connection pooling and retry/backoff on failures.
+
+    Transient ``429`` and ``5xx`` responses are retried with exponential
+    backoff, honoring the ``Retry-After`` header when present.
+    """
+    retry = Retry(
+        total=3,
+        backoff_factor=0.5,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET"}),
+        respect_retry_after_header=True,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session = requests.Session()
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+# Shared session so HTTP connections are reused across requests.
+_SESSION = _build_session()
+
+
+def _http_get(url: str, *, timeout: float) -> requests.Response:
+    """GET ``url`` through the shared session with a rotated User-Agent.
+
+    :param url: The URL to fetch.
+    :param timeout: HTTP request timeout in seconds.
+    :returns: The :class:`requests.Response`.
+    """
+    headers = {**_BASE_HEADERS, "User-Agent": random.choice(_USER_AGENTS)}
+    return _SESSION.get(url, headers=headers, cookies=_COOKIES, timeout=timeout)
+
+
+# Cache of resolved start times keyed by video id, to avoid re-fetching the
+# watch page for the same upcoming stream on every channel scan.
+_START_TIME_TTL = 900.0  # seconds
+_start_time_cache: dict[str, tuple[float, datetime]] = {}
+
+
+def clear_caches() -> None:
+    """Clear the module's internal caches (resolved start times)."""
+    _start_time_cache.clear()
 
 
 @dataclass
@@ -74,9 +138,7 @@ class UpcomingStream:
         handle = channel_handle.lstrip("@")
         url = f"https://www.youtube.com/@{handle}"
         try:
-            resp = requests.get(
-                url, headers=_HEADERS, cookies=_COOKIES, timeout=timeout,
-            )
+            resp = _http_get(url, timeout=timeout)
             return resp.status_code == 200
         except requests.RequestException:
             return False
@@ -120,9 +182,7 @@ def get_channel_info(
     handle = channel_handle.lstrip("@")
     url = f"https://www.youtube.com/@{handle}"
     try:
-        resp = requests.get(
-            url, headers=_HEADERS, cookies=_COOKIES, timeout=timeout,
-        )
+        resp = _http_get(url, timeout=timeout)
         if resp.status_code != 200:
             return None
         data = _extract_yt_initial_data(resp.text)
@@ -420,23 +480,31 @@ def _fetch_scheduled_start(
 
     The channel grid's ``lockupViewModel`` no longer carries a machine-readable
     start time, so the value is read from the video's watch page
-    (``liveBroadcastDetails.startTimestamp``).
+    (``liveBroadcastDetails.startTimestamp``). Successful lookups are cached
+    per video id for ``_START_TIME_TTL`` seconds to avoid re-fetching the same
+    watch page on every channel scan.
 
     :param video_id: YouTube video ID to look up.
     :param timeout: HTTP request timeout in seconds.
     :returns: The scheduled start time in UTC, or ``None`` on network/parse
               errors or when the timestamp is unavailable.
     """
+    cached = _start_time_cache.get(video_id)
+    if cached is not None and time.monotonic() - cached[0] < _START_TIME_TTL:
+        return cached[1]
+
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
-        resp = requests.get(
-            url, headers=_HEADERS, cookies=_COOKIES, timeout=timeout,
-        )
+        resp = _http_get(url, timeout=timeout)
         resp.raise_for_status()
         data = _extract_player_response(resp.text)
     except (requests.RequestException, ValueError):
         return None
-    return _extract_actual_start(data) or _extract_scheduled_start(data)
+
+    result = _extract_actual_start(data) or _extract_scheduled_start(data)
+    if result is not None:
+        _start_time_cache[video_id] = (time.monotonic(), result)
+    return result
 
 
 def is_stream_live(video_id: str, *, timeout: float = 10) -> StreamLiveStatus:
@@ -455,9 +523,7 @@ def is_stream_live(video_id: str, *, timeout: float = 10) -> StreamLiveStatus:
     """
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
-        resp = requests.get(
-            url, headers=_HEADERS, cookies=_COOKIES, timeout=timeout,
-        )
+        resp = _http_get(url, timeout=timeout)
         resp.raise_for_status()
     except requests.RequestException:
         return StreamLiveStatus(is_live=False)
@@ -498,9 +564,7 @@ def get_upcoming_streams(
         url = f"https://www.youtube.com/@{handle}/streams"
 
         try:
-            resp = requests.get(
-                url, headers=_HEADERS, cookies=_COOKIES, timeout=timeout,
-            )
+            resp = _http_get(url, timeout=timeout)
             resp.raise_for_status()
         except requests.RequestException as exc:
             print(f"Warning: failed to fetch {url}: {exc}")

@@ -12,6 +12,7 @@ import requests
 from yt_live_scraper.scraper import (
     StreamLiveStatus,
     UpcomingStream,
+    clear_caches,
     _extract_actual_start,
     _extract_player_response,
     _extract_scheduled_start,
@@ -28,6 +29,14 @@ from yt_live_scraper.scraper import (
 )
 
 NOW = datetime(2026, 3, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _clear_start_time_cache():
+    """Isolate the module-level start-time cache between tests."""
+    clear_caches()
+    yield
+    clear_caches()
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +334,7 @@ class TestUpcomingStreamStr:
 
 class TestUpcomingStreamExists:
     def test_exists_returns_true_on_200(self):
-        with patch("yt_live_scraper.scraper.requests.get") as mocked_get:
+        with patch("yt_live_scraper.scraper._http_get") as mocked_get:
             mocked_get.return_value = _FakeResponse("", status_code=200)
             assert UpcomingStream.exists("anychannel") is True
             mocked_get.assert_called_once()
@@ -333,17 +342,17 @@ class TestUpcomingStreamExists:
             assert "@anychannel" in args[0]
 
     def test_exists_returns_false_on_404(self):
-        with patch("yt_live_scraper.scraper.requests.get") as mocked_get:
+        with patch("yt_live_scraper.scraper._http_get") as mocked_get:
             mocked_get.return_value = _FakeResponse("", status_code=404)
             assert UpcomingStream.exists("nonexistent") is False
 
     def test_exists_returns_false_on_exception(self):
-        with patch("yt_live_scraper.scraper.requests.get") as mocked_get:
+        with patch("yt_live_scraper.scraper._http_get") as mocked_get:
             mocked_get.side_effect = requests.RequestException()
             assert UpcomingStream.exists("errorchannel") is False
 
     def test_exists_strips_at_prefix(self):
-        with patch("yt_live_scraper.scraper.requests.get") as mocked_get:
+        with patch("yt_live_scraper.scraper._http_get") as mocked_get:
             mocked_get.return_value = _FakeResponse("", status_code=200)
             UpcomingStream.exists("@mychannel")
             args, kwargs = mocked_get.call_args
@@ -367,7 +376,7 @@ class _FakeResponse:
 class TestGetUpcomingStreams:
     def _patch_get(self, yt_data: dict):
         html = _wrap_as_html(yt_data)
-        return patch("yt_live_scraper.scraper.requests.get", return_value=_FakeResponse(html))
+        return patch("yt_live_scraper.scraper._http_get", return_value=_FakeResponse(html))
 
     def test_returns_upcoming(self):
         data = _make_yt_data(
@@ -474,7 +483,7 @@ class TestGetUpcomingStreams:
         )
         html = _wrap_as_html(data)
         with patch(
-            "yt_live_scraper.scraper.requests.get",
+            "yt_live_scraper.scraper._http_get",
             return_value=_FakeResponse(html),
         ):
             streams = get_upcoming_streams(
@@ -535,7 +544,7 @@ class TestGetUpcomingStreams:
             }
         }
         html = _wrap_as_html(data)
-        with patch("yt_live_scraper.scraper.requests.get", return_value=_FakeResponse(html)):
+        with patch("yt_live_scraper.scraper._http_get", return_value=_FakeResponse(html)):
             streams = get_upcoming_streams(["ch"], from_date=date(2026, 1, 1))
         
         assert len(streams) == 1
@@ -582,7 +591,7 @@ class TestGetUpcomingStreams:
         channel_html = _wrap_as_html(self._lockup_yt_data(lockup))
         watch_html = _wrap_player_response(_make_player_response())
         with patch(
-            "yt_live_scraper.scraper.requests.get",
+            "yt_live_scraper.scraper._http_get",
             side_effect=[_FakeResponse(channel_html), _FakeResponse(watch_html)],
         ):
             streams = get_upcoming_streams(["ch"], from_date=date(2026, 1, 1))
@@ -598,7 +607,7 @@ class TestGetUpcomingStreams:
         lockup = _make_lockup(content_id="up123", badge_text="Upcoming")
         channel_html = _wrap_as_html(self._lockup_yt_data(lockup))
         with patch(
-            "yt_live_scraper.scraper.requests.get",
+            "yt_live_scraper.scraper._http_get",
             side_effect=[
                 _FakeResponse(channel_html),
                 _FakeResponse("<html>no player response</html>"),
@@ -611,7 +620,7 @@ class TestGetUpcomingStreams:
         data = _make_yt_data(videos=[_make_video(start_time="1772654400")])
         html = _wrap_as_html(data)
         with patch(
-            "yt_live_scraper.scraper.requests.get",
+            "yt_live_scraper.scraper._http_get",
             return_value=_FakeResponse(html),
         ) as mock_get:
             get_upcoming_streams(["@myhandle"], from_date=date(2026, 1, 1))
@@ -620,7 +629,7 @@ class TestGetUpcomingStreams:
 
     def test_http_error_skips_channel(self, capsys):
         with patch(
-            "yt_live_scraper.scraper.requests.get",
+            "yt_live_scraper.scraper._http_get",
             side_effect=requests.ConnectionError("fail"),
         ):
             streams = get_upcoming_streams(["badchannel"])
@@ -629,7 +638,7 @@ class TestGetUpcomingStreams:
 
     def test_no_yt_initial_data_skips_channel(self, capsys):
         with patch(
-            "yt_live_scraper.scraper.requests.get",
+            "yt_live_scraper.scraper._http_get",
             return_value=_FakeResponse("<html>no data</html>"),
         ):
             streams = get_upcoming_streams(["ch"])
@@ -675,7 +684,7 @@ class TestFetchScheduledStart:
     def test_returns_start_from_watch_page(self):
         html = _wrap_player_response(_make_player_response())
         with patch(
-            "yt_live_scraper.scraper.requests.get",
+            "yt_live_scraper.scraper._http_get",
             return_value=_FakeResponse(html),
         ):
             result = _fetch_scheduled_start("vid")
@@ -683,14 +692,14 @@ class TestFetchScheduledStart:
 
     def test_returns_none_on_http_error(self):
         with patch(
-            "yt_live_scraper.scraper.requests.get",
+            "yt_live_scraper.scraper._http_get",
             side_effect=requests.ConnectionError("fail"),
         ):
             assert _fetch_scheduled_start("vid") is None
 
     def test_returns_none_when_no_player_response(self):
         with patch(
-            "yt_live_scraper.scraper.requests.get",
+            "yt_live_scraper.scraper._http_get",
             return_value=_FakeResponse("<html>nothing</html>"),
         ):
             assert _fetch_scheduled_start("vid") is None
@@ -699,7 +708,7 @@ class TestFetchScheduledStart:
         # No liveBroadcastDetails — start time only in the offline slate.
         html = _wrap_player_response(_make_offline_slate_response("1781643600"))
         with patch(
-            "yt_live_scraper.scraper.requests.get",
+            "yt_live_scraper.scraper._http_get",
             return_value=_FakeResponse(html),
         ):
             result = _fetch_scheduled_start("vid")
@@ -777,7 +786,7 @@ class TestExtractActualStart:
 class TestIsStreamLive:
     def _patch_get(self, html: str, status_code: int = 200):
         return patch(
-            "yt_live_scraper.scraper.requests.get",
+            "yt_live_scraper.scraper._http_get",
             return_value=_FakeResponse(html, status_code),
         )
 
@@ -820,7 +829,7 @@ class TestIsStreamLive:
 
     def test_returns_not_live_on_http_error(self):
         with patch(
-            "yt_live_scraper.scraper.requests.get",
+            "yt_live_scraper.scraper._http_get",
             side_effect=requests.ConnectionError("fail"),
         ):
             result = is_stream_live("abc123")
@@ -841,22 +850,22 @@ class TestGetChannel:
     def test_returns_name_on_200(self):
         data = _make_yt_data(channel_name="My Awesome Channel")
         html = _wrap_as_html(data)
-        with patch("yt_live_scraper.scraper.requests.get") as mocked_get:
+        with patch("yt_live_scraper.scraper._http_get") as mocked_get:
             mocked_get.return_value = _FakeResponse(html, status_code=200)
             assert get_channel("anychannel") == "My Awesome Channel"
 
     def test_returns_none_on_404(self):
-        with patch("yt_live_scraper.scraper.requests.get") as mocked_get:
+        with patch("yt_live_scraper.scraper._http_get") as mocked_get:
             mocked_get.return_value = _FakeResponse("", status_code=404)
             assert get_channel("nonexistent") is None
 
     def test_returns_none_on_exception(self):
-        with patch("yt_live_scraper.scraper.requests.get") as mocked_get:
+        with patch("yt_live_scraper.scraper._http_get") as mocked_get:
             mocked_get.side_effect = requests.RequestException()
             assert get_channel("errorchannel") is None
 
     def test_returns_none_on_invalid_html(self):
-        with patch("yt_live_scraper.scraper.requests.get") as mocked_get:
+        with patch("yt_live_scraper.scraper._http_get") as mocked_get:
             mocked_get.return_value = _FakeResponse("<html>no data</html>", status_code=200)
             assert get_channel("nodatachannel") is None
 
@@ -873,7 +882,7 @@ class TestCli:
         )
         html = _wrap_as_html(data)
         with patch(
-            "yt_live_scraper.scraper.requests.get",
+            "yt_live_scraper.scraper._http_get",
             return_value=_FakeResponse(html),
         ):
             from yt_live_scraper.cli import main
@@ -889,7 +898,7 @@ class TestCli:
         )
         html = _wrap_as_html(data)
         with patch(
-            "yt_live_scraper.scraper.requests.get",
+            "yt_live_scraper.scraper._http_get",
             return_value=_FakeResponse(html),
         ):
             from yt_live_scraper.cli import main
@@ -913,7 +922,7 @@ class TestCli:
         )
         html = _wrap_as_html(data)
         with patch(
-            "yt_live_scraper.scraper.requests.get",
+            "yt_live_scraper.scraper._http_get",
             return_value=_FakeResponse(html),
         ):
             from yt_live_scraper.cli import main
@@ -927,7 +936,7 @@ class TestCli:
         data = _make_yt_data(videos=[_make_video(overlay_style="DEFAULT", start_time=None)])
         html = _wrap_as_html(data)
         with patch(
-            "yt_live_scraper.scraper.requests.get",
+            "yt_live_scraper.scraper._http_get",
             return_value=_FakeResponse(html),
         ):
             from yt_live_scraper.cli import main
@@ -935,3 +944,92 @@ class TestCli:
                 main(["ch", "--from", "2026-01-01"])
             assert exc_info.value.code == 0
         assert "No upcoming" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# HTTP session: rotated User-Agent, connection reuse, retry/backoff
+# ---------------------------------------------------------------------------
+
+class TestHttpGet:
+    def test_uses_a_pooled_user_agent(self):
+        from yt_live_scraper.scraper import _USER_AGENTS, _http_get
+
+        with patch("yt_live_scraper.scraper._SESSION.get") as mock_get:
+            mock_get.return_value = _FakeResponse("", status_code=200)
+            _http_get("https://example.com", timeout=5)
+
+        _args, kwargs = mock_get.call_args
+        assert kwargs["headers"]["User-Agent"] in _USER_AGENTS
+        assert kwargs["headers"]["Accept-Language"] == "en-US,en;q=0.9"
+        assert "SOCS" in kwargs["cookies"]
+        assert kwargs["timeout"] == 5
+
+    def test_rotates_user_agent_between_calls(self):
+        from yt_live_scraper.scraper import _USER_AGENTS, _http_get
+
+        ua_a, ua_b = _USER_AGENTS[0], _USER_AGENTS[1]
+        with (
+            patch("yt_live_scraper.scraper._SESSION.get") as mock_get,
+            patch("yt_live_scraper.scraper.random.choice", side_effect=[ua_a, ua_b]),
+        ):
+            mock_get.return_value = _FakeResponse("", status_code=200)
+            _http_get("https://example.com", timeout=5)
+            _http_get("https://example.com", timeout=5)
+
+        seen = [c.kwargs["headers"]["User-Agent"] for c in mock_get.call_args_list]
+        assert seen == [ua_a, ua_b]
+
+    def test_session_is_shared_with_retry_adapter(self):
+        import requests as _requests
+
+        from yt_live_scraper.scraper import _SESSION
+
+        assert isinstance(_SESSION, _requests.Session)
+        retry = _SESSION.get_adapter("https://www.youtube.com").max_retries
+        assert retry.total == 3
+        assert 429 in retry.status_forcelist
+        assert 503 in retry.status_forcelist
+        assert retry.respect_retry_after_header is True
+
+
+# ---------------------------------------------------------------------------
+# Start-time cache
+# ---------------------------------------------------------------------------
+
+class TestStartTimeCache:
+    def test_second_lookup_served_from_cache(self):
+        html = _wrap_player_response(_make_player_response())
+        with patch(
+            "yt_live_scraper.scraper._http_get",
+            return_value=_FakeResponse(html),
+        ) as mock_get:
+            first = _fetch_scheduled_start("vidcache")
+            second = _fetch_scheduled_start("vidcache")
+
+        assert first == second
+        assert mock_get.call_count == 1
+
+    def test_failures_are_not_cached(self):
+        with patch(
+            "yt_live_scraper.scraper._http_get",
+            side_effect=requests.ConnectionError("fail"),
+        ) as mock_get:
+            assert _fetch_scheduled_start("vidfail") is None
+            assert _fetch_scheduled_start("vidfail") is None
+
+        assert mock_get.call_count == 2
+
+    def test_cache_expires_after_ttl(self):
+        html = _wrap_player_response(_make_player_response())
+        with patch(
+            "yt_live_scraper.scraper._http_get",
+            return_value=_FakeResponse(html),
+        ) as mock_get:
+            with patch("yt_live_scraper.scraper.time.monotonic", return_value=1000.0):
+                _fetch_scheduled_start("vidttl")
+            with patch(
+                "yt_live_scraper.scraper.time.monotonic", return_value=1000.0 + 901.0
+            ):
+                _fetch_scheduled_start("vidttl")
+
+        assert mock_get.call_count == 2
